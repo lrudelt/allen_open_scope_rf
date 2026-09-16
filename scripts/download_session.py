@@ -5,6 +5,17 @@ from utils import DandiSession
 import numpy as np
 from pathlib import Path
 
+# Example session ID
+# # Ephys session
+# session_id = '001637'
+# asset_path = 'sub-830794/sub-830794_ses-ecephys-830794-2026-01-26-12-02-05_ecephys.nwb'
+# # SLAP2 session
+# session_id = '001424'
+# asset_path = 'sub-829704/sub-829704_ses-slap2-829704-2025-12-18-10-57-36_image+ophys.nwb'
+# output_path = '../../data'
+# # Mesoscope session
+# session_id = '001768'
+# asset_path = 'sub-853137_ses-multiplane-ophys-853137-2026-07-14-15-24-43_ophys.nwb'
 
 def main(session_id:str, asset_path:str, output_path:str):
     
