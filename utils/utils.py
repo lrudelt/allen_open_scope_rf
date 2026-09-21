@@ -303,3 +303,46 @@ def load_all_gabor_rf_results(results_dir=None):
                 })
 
     return pd.DataFrame(results)
+
+# ---------------------------------------------------------------------------
+# CCF area / layer (same decoding as alexmaier_code/ai_oscp_neuro/openscope_ccf)
+# Prefer `from utils import load_unit_areas, decode_ccf` via the package __init__.
+# ---------------------------------------------------------------------------
+
+def decode_ccf(acronym):
+    """Decode an electrodes.location CCF acronym into area / layer / group / tissue."""
+    from .ccf import decode_ccf as _decode
+    return _decode(acronym)
+
+
+def enrich_unit_locations(df, location_col="location"):
+    """Add area / layer / group / tissue columns by decoding ``location``."""
+    from .ccf import enrich_unit_locations as _enrich
+    return _enrich(df, location_col=location_col)
+
+
+def load_unit_areas(stream, probe=None):
+    """Per-unit CCF area and layer from a streamed ecephys NWB (no spike times).
+
+    ``stream`` is an :class:`~utils.streaming.NWBStream` from
+    :func:`utils.open_nwb` / :meth:`DandiSession.open` / :func:`open_local`.
+    """
+    from .ccf import enrich_unit_locations, structure_label
+    df = stream.units_df(probe=probe, include_spikes=False)
+    if "area" not in df.columns:
+        if "location" not in df.columns:
+            raise ValueError(
+                "No electrodes.location in this NWB — CCF acronyms are absent."
+            )
+        df = enrich_unit_locations(df)
+    df = df.copy()
+    df["structure"] = [
+        structure_label(a, L) for a, L in zip(df["area"], df["layer"])
+    ]
+    return df
+
+
+def parse_mesoscope_location(location, plane_fallback=None):
+    """Parse mesoscope ``Structure: … Depth: …`` optophysiology location strings."""
+    from .ccf import parse_mesoscope_location as _parse
+    return _parse(location, plane_fallback=plane_fallback)
