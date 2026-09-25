@@ -3,7 +3,7 @@
 The mesoscope counterpart of `compute_rf_siegle_gabors.py`: instead of a spike
 rate per presentation it uses the mean ΔF/F (or deconvolved event amplitude) of
 each ROI over the response window. One HDF5 file is written per
-(plane, delay, duration) into <results-path>/<signal>/<session>/, then the grid
+(plane, delay, duration) into <results-path>/<session>/<signal>/, then the grid
 is reduced to one optimized file per plane, exactly as for the probes.
 
     python compute_rf_siegle_gabors_mesoscope.py \
@@ -54,12 +54,12 @@ def load_traces(stream, plane, signal='dff'):
     return traces, times, unit_names
 
 
-def main(nwb_path, plane_idx, results_dir=RESULTS_DIR, signal='dff', baseline=0.0,
+def main(nwb_path, plane_idx, results_dir=RESULTS_DIR, signal='events', baseline=0.0,
          n_shuffle=siegle.N_SHUFFLE, optimize=True):
     session_name = Path(nwb_path).stem
     # One tree per signal: readers key the optimized files on the plane alone,
     # so dff and events maps sharing a directory would silently shadow each other
-    results_dir = Path(results_dir) / signal / session_name
+    results_dir = Path(results_dir) / session_name / signal
 
     print(f'Loading {nwb_path}...')
     stream = utils.open_local(nwb_path)
@@ -121,9 +121,9 @@ if __name__ == '__main__':
     parser.add_argument('--plane-idx', type=int, required=True,
                         help='Index into stream.imaging_planes(), 0-based')
     parser.add_argument('--results-path', default=RESULTS_DIR, help='Root directory for results')
-    parser.add_argument('--signal', default='dff', choices=['dff', 'events'],
-                        help="Trace to analyse: 'dff' (default) or the OASIS-deconvolved 'events'. "
-                             "Results go to <results-path>/<signal>/<session>/")
+    parser.add_argument('--signal', default='events', choices=['dff', 'events'],
+                        help="Trace to analyse: the OASIS-deconvolved 'events' (default) "
+                             "or raw 'dff'. Results go to <results-path>/<session>/<signal>/")
     parser.add_argument('--baseline', type=float, default=0.0,
                         help='Seconds of pre-stimulus signal to subtract per trial. '
                              'Default 0 (no subtraction), matching the spike-rate version; '

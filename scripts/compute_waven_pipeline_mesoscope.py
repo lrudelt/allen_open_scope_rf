@@ -23,14 +23,15 @@ import optimize_waven_parameters as owp
 SIGNALS = ('dff', 'events')
 
 
-def main(nwb_path=None, results_dir=None, plane_idx=0, signal='dff'):
+def main(nwb_path=None, results_dir=None, plane_idx=0, signal='events'):
 
     if signal not in SIGNALS:
         raise ValueError(f"signal must be one of {SIGNALS}, got {signal!r}")
-    # full_pipeline skips existing files, so each signal needs its own tree or
-    # an events run would silently reuse the dF/F results
-    results_dir = Path(results_dir) / signal
     session_name = Path(nwb_path).stem
+    # full_pipeline skips existing files, so each signal needs its own tree or
+    # an events run would silently reuse the dF/F results; the session sits
+    # above it so that one session's results stay in one place
+    results_dir = Path(results_dir) / session_name / signal
 
     # delays = np.arange(0.0, 0.35, 0.05)
     durations = np.arange(0., 0.3, 0.1)
@@ -87,7 +88,7 @@ def main(nwb_path=None, results_dir=None, plane_idx=0, signal='dff'):
             # Optimize parameters 
             print('Optimizing parameters...')
             print(results_path)
-            outpath = Path(f"/mnt/ceph-hdd/projects/cidbn_wibral_neuro_nonhuman/SPP2205_mraabe/results/allen_open_scope/rf/waven/zebra/optimized/{signal}/{session_name}")
+            outpath = Path(f"/mnt/ceph-hdd/projects/cidbn_wibral_neuro_nonhuman/SPP2205_mraabe/results/allen_open_scope/rf/waven/zebra/optimized/{session_name}/{signal}")
             stem = f"optimized__{session_name}__{plane}__trial_{i_trial}__phase_{phase}"
             csv_out = outpath / (stem + ".csv")
             h5_out = outpath / (stem + ".h5")
@@ -102,8 +103,8 @@ if __name__ == "__main__":
     parser.add_argument('--nwb-path', required=True, help='Path to the NWB file (e.g., /data/sub-820454.nwb)')
     parser.add_argument('--results-dir', required=True, help='Root directory for saving results')
     parser.add_argument('--plane-idx', required=True, type=int, help='Index of the plane to process (0-based)')
-    parser.add_argument('--signal', default='dff', choices=SIGNALS,
-                        help="Trace to correlate: 'dff' (default) or the OASIS-deconvolved 'events'. "
-                             "Results go to <results-dir>/<signal>/")
+    parser.add_argument('--signal', default='events', choices=SIGNALS,
+                        help="Trace to correlate: the OASIS-deconvolved 'events' (default) "
+                             "or raw 'dff'. Results go to <results-dir>/<session>/<signal>/")
     args = parser.parse_args()
     main(nwb_path=args.nwb_path, results_dir=args.results_dir, plane_idx=args.plane_idx, signal=args.signal)

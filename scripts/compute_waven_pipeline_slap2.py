@@ -31,9 +31,16 @@ iGluSnFR4f, fast enough to resolve single movie frames; red is RCaMP3, whose
 calcium kinetics blur the response across frames no matter which window is
 chosen - so each channel gets its own delay/duration grid.
 
+The correlation runs against the deconvolved events by default; `--signal dff`
+restores the raw ΔF/F. The SLAP2 release carries no events (unlike the mesoscope
+one), so `utils.deconvolution` computes and caches them per session, DMD and
+channel on first use. Note that bout centring exists to remove ΔF/F baseline
+steps across the blanking gaps; the events have no such drift, so
+`--no-centre-bouts` is the more natural choice for them.
+
 The two outputs go to different places: the per-(delay, duration) files are
 bulky and land in the HDD workspace, while the reduced one-row-per-unit results
-go to the project results tree.
+go to the project results tree. Each signal gets its own subtree in both.
 
     python compute_waven_pipeline_slap2.py \
         --nwb-path ../../../rawdata/allen_open_scope/slap2/sub-829704/sub-829704_ses-829704-2025-12-18-10-57-36_image+ophys.nwb \
@@ -51,6 +58,7 @@ import numpy as np
 sys.path.append('..')
 
 import utils
+from utils import deconvolution
 from waven_settings import *
 from waven_pipeline import *
 import optimize_waven_parameters as owp
@@ -77,26 +85,37 @@ GRIDS = {
 }
 
 
-def load_dff(stream, dmd, channel, t_start, t_stop):
-    """(dff_df, unit_names) for one DMD/channel over [t_start, t_stop].
+def load_signal(stream, dmd, channel, t_start, t_stop, signal='dff', nwb_path=None):
+    """(traces_df, unit_names) for one DMD/channel over [t_start, t_stop].
+
+    signal: 'dff' for ΔF/F, 'events' for the deconvolved series.
 
     Only the Zebra block is read: the full-session traces are several hundred MB
     per channel, and everything outside the block is dead weight in the cumulative
     sums downstream.
     """
-    dff_df = stream.slap2_dff(dmd, channel, t_start=t_start, t_stop=t_stop)
+    if signal == 'dff':
+        traces_df = stream.slap2_dff(dmd, channel, t_start=t_start, t_stop=t_stop)
+    elif signal == 'events':
+        traces_df = deconvolution.slap2_events_df(nwb_path, dmd, channel, t_start=t_start,
+                                                  t_stop=t_stop, stream=stream)
+    else:
+        raise ValueError(f"signal must be 'dff' or 'events', got {signal!r}")
+
     roi_ids = stream.slap2_rois(dmd)['roi_id'].to_numpy()
     unit_names = [f'{dmd}_{channel}_roi{roi_id}' for roi_id in roi_ids]
-    return dff_df, unit_names
+    return traces_df, unit_names
 
 
 def main(nwb_path, results_dir, dmd='DMD1', channel='green', phases=('0', '1'),
-         per_trial=False, fps=30.0, min_coverage=siegle.MIN_COVERAGE,
+         signal='events', per_trial=False, fps=30.0, min_coverage=siegle.MIN_COVERAGE,
          centre_bouts=True, recompute=False, optimize=True,
          optimized_dir=OPTIMIZED_DIR):
 
     session_name = Path(nwb_path).stem
-    results_dir = Path(results_dir) / session_name
+    # full_pipeline skips grid cells whose file exists and the optimized stems
+    # carry no signal, so each signal needs its own subtree in both places
+    results_dir = Path(results_dir) / session_name / signal
     optimized_dir = Path(optimized_dir)
 
     delays = GRIDS[channel]['delays']
@@ -114,7 +133,8 @@ def main(nwb_path, results_dir, dmd='DMD1', channel='green', phases=('0', '1'),
     margin = float(delays.max() + np.abs(durations).max() + 1.0)
     t_start = zebra_frames['start_time'].min() - margin
     t_stop = zebra_frames['stop_time'].max() + margin
-    dff_df, unit_names = load_dff(stream, dmd, channel, t_start, t_stop)
+    traces_df, unit_names = load_signal(stream, dmd, channel, t_start, t_stop,
+                                        signal=signal, nwb_path=nwb_path)
 
     bout_bounds = None
     if centre_bouts:
@@ -148,7 +168,7 @@ def main(nwb_path, results_dir, dmd='DMD1', channel='green', phases=('0', '1'),
                 'dmd': dmd,
                 'plane': dmd,          # keeps the shared analysis code's naming happy
                 'channel': channel,
-                'signal': 'dff',
+                'signal': signal,
                 'phase': phase,
                 'fps_assumed': fps,
                 'pooled_repeats': not per_trial,
@@ -161,7 +181,7 @@ def main(nwb_path, results_dir, dmd='DMD1', channel='green', phases=('0', '1'),
             results_path = results_dir.joinpath(dmd, channel, *trial_part, f'phase_{phase}')
             results_path = full_pipeline(
                 frame_onset_times,
-                dff_df,
+                traces_df,
                 delays,
                 durations,
                 unit_names,
@@ -180,7 +200,7 @@ def main(nwb_path, results_dir, dmd='DMD1', channel='green', phases=('0', '1'),
                 print(f'Optimizing parameters over {results_path}...')
                 stem = '__'.join(['optimized', session_name, dmd, channel,
                                   *trial_part, f'phase_{phase}'])
-                outdir = optimized_dir / session_name
+                outdir = optimized_dir / session_name / signal
                 df = owp.optimize_parameters(results_dir=results_path,
                                              output_path=outdir / (stem + '.csv'))
                 df = owp.load_rf_maps(df)
@@ -202,6 +222,10 @@ if __name__ == '__main__':
                         help="'green' (iGluSnFR4f, default) or 'red' (RCaMP3)")
     parser.add_argument('--phases', nargs='+', default=['0', '1'],
                         choices=['0', '1', 'complex'], help='Wavelet phases to run')
+    parser.add_argument('--signal', default='events', choices=['dff', 'events'],
+                        help="Trace to correlate: the deconvolved 'events' (default), "
+                             'computed and cached by utils.deconvolution on first use, '
+                             "or raw 'dff'. Each signal gets its own results subtree.")
     parser.add_argument('--per-trial', action='store_true',
                         help='One result set per Zebra repeat instead of pooling them. '
                              'Needed for repeatability checks; note a single repeat may '
@@ -221,6 +245,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     main(args.nwb_path, args.results_dir, args.dmd, args.channel, tuple(args.phases),
+         signal=args.signal,
          per_trial=args.per_trial, fps=args.fps, min_coverage=args.min_coverage,
          centre_bouts=not args.no_centre_bouts, recompute=args.recompute,
          optimize=not args.no_optimize, optimized_dir=args.optimized_dir)
