@@ -10,7 +10,7 @@ locally (no atlas lookup). To verify raw channel labels only, count
     cd code/scripts
     python test_ephys_unit_areas.py
 """
-
+# %%
 from __future__ import annotations
 
 import sys
@@ -81,6 +81,6 @@ def main(session_id: str = SESSION_ID, asset_path: str = ASSET_PATH) -> pd.DataF
 
     return counts
 
-
+# %% 
 if __name__ == "__main__":
     main()
