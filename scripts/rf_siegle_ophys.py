@@ -212,6 +212,22 @@ def compute_siegle_ophys(traces, times, unit_names, df_rf, x_pos, y_pos, orienta
 # Stimulus table helpers
 # ---------------------------------------------------------------------------
 
+def split_gabor_block(df_rf):
+    """First and second half of one Gabor RF block, in presentation order.
+
+    Trial 0 is the earlier half and trial 1 the later half, so the two maps
+    mimic Zebra trial 0 and trial 1. An odd presentation count gives the extra
+    presentation to trial 1.
+    """
+    ordered = df_rf.sort_values("start_time")
+    mid = len(ordered) // 2
+    if mid == 0 or mid == len(ordered):
+        raise ValueError(
+            f"RF block has {len(ordered)} presentations; cannot split it in half"
+        )
+    return {0: ordered.iloc[:mid].copy(), 1: ordered.iloc[mid:].copy()}
+
+
 def rf_grid(df_rf):
     """Sorted x positions, y positions and orientations of an RF mapping table."""
     x_pos = np.sort(np.unique(df_rf['X'].to_numpy(float)))
@@ -227,6 +243,91 @@ def slice_to_stimulus(traces, times, df_rf, margin):
     return traces[:, keep], times[keep]
 
 
+def _window_key(delay, duration):
+    return (round(float(delay), 5), round(float(duration), 5))
+
+
+def assemble_fixed_windows(full_optimized, sweep_files, output_path):
+    """Build one half-block file using the full run's delay and duration.
+
+    ``best_delay`` and ``best_duration`` are copied from the full-block
+    optimized file. Each unit and orientation keeps that window; the half
+    block is not allowed to pick a new one.
+    """
+    full_optimized = Path(full_optimized)
+    with h5py.File(full_optimized, "r") as hf:
+        unit_names = hf["unit_names"][:]
+        names = unit_names.astype(str)
+        orientations = hf["orientations"][:]
+        x_positions = hf["x_positions"][:]
+        y_positions = hf["y_positions"][:]
+        best_delay = np.asarray(hf["best_delay"][:], dtype=float)
+        best_duration = np.asarray(hf["best_duration"][:], dtype=float)
+
+    needed = {
+        _window_key(delay, duration)
+        for delay, duration in zip(best_delay.ravel(), best_duration.ravel())
+        if np.isfinite(delay) and np.isfinite(duration)
+    }
+    found = {}
+    for path in sweep_files:
+        with h5py.File(path, "r") as hf:
+            if "delay_s" not in hf.attrs:
+                continue
+            key = _window_key(hf.attrs["delay_s"], hf.attrs["duration_s"])
+            got = hf["unit_names"][:].astype(str)
+            if len(got) != len(names) or not np.array_equal(got, names):
+                raise ValueError(
+                    f"Unit list in {Path(path).name} does not match {full_optimized.name}"
+                )
+            found[key] = dict(
+                p=hf["p_value"][:],
+                rate=hf["mean_rate"][:],
+                mean=hf["mean_response"][:],
+                z=hf["z_score_response"][:],
+            )
+    missing = sorted(needed - set(found))
+    if missing:
+        raise FileNotFoundError(
+            "Half-block files are missing the full run's windows: "
+            + ", ".join(f"delay={d:g} duration={u:g}" for d, u in missing)
+        )
+
+    n_units, n_ori = best_delay.shape
+    nx, ny = len(x_positions), len(y_positions)
+    p_values = np.full((n_units, n_ori), np.nan)
+    mean_rate = np.full((n_units, n_ori), np.nan)
+    mean_response = np.full((n_units, n_ori, nx, ny), np.nan)
+    z_score = np.full((n_units, n_ori, nx, ny), np.nan)
+    for unit in range(n_units):
+        for ori in range(n_ori):
+            if not np.isfinite(best_delay[unit, ori]):
+                continue
+            src = found[_window_key(best_delay[unit, ori], best_duration[unit, ori])]
+            p_values[unit, ori] = src["p"][unit, ori]
+            mean_rate[unit, ori] = src["rate"][unit, ori]
+            mean_response[unit, ori] = src["mean"][unit, ori]
+            z_score[unit, ori] = src["z"][unit, ori]
+
+    output_path = Path(output_path).with_suffix(".h5")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Saving fixed-window results to {output_path}...")
+    with h5py.File(output_path, "w") as hf:
+        hf.attrs["parameter_source"] = str(full_optimized)
+        hf.attrs["parameters"] = "full_run_delay_duration"
+        hf.create_dataset("unit_names", data=unit_names)
+        hf.create_dataset("orientations", data=orientations)
+        hf.create_dataset("x_positions", data=x_positions)
+        hf.create_dataset("y_positions", data=y_positions)
+        hf.create_dataset("best_delay", data=best_delay)
+        hf.create_dataset("best_duration", data=best_duration)
+        hf.create_dataset("p_value", data=p_values)
+        hf.create_dataset("mean_rate", data=mean_rate)
+        hf.create_dataset("mean_response", data=mean_response, compression="gzip", compression_opts=4)
+        hf.create_dataset("z_score_response", data=z_score, compression="gzip", compression_opts=4)
+    return output_path
+
+
 def optimize_over_delay_duration(session_dir, pattern, output_path):
     """Pick, per (ROI, orientation), the (delay, duration) with the lowest p-value.
 
@@ -236,7 +337,10 @@ def optimize_over_delay_duration(session_dir, pattern, output_path):
     """
     from compute_rf_siegle_gabors import _optimize_probe_files
 
-    files = sorted(f for f in Path(session_dir).glob(pattern) if 'optimized' not in f.stem)
+    files = sorted(
+        f for f in Path(session_dir).glob(pattern)
+        if 'optimized' not in f.stem and '__trial_' not in f.stem
+    )
     if not files:
         raise FileNotFoundError(f'No result files matching {pattern!r} in {session_dir}')
     return _optimize_probe_files(files, Path(output_path))

@@ -198,7 +198,11 @@ def optimize_over_delay_duration(session_dir, output_path=None):
 
     session_dir = Path(session_dir)
     # Exclude any previously written optimized files to avoid mixing them in
-    h5_files = sorted(f for f in session_dir.glob('*.h5') if 'optimized' not in f.stem)
+    # Split-trial files live beside these and must not enter the full-block reduction.
+    h5_files = sorted(
+        f for f in session_dir.glob('*.h5')
+        if 'optimized' not in f.stem and '__trial_' not in f.stem
+    )
     if not h5_files:
         raise FileNotFoundError(f'No .h5 files found in {session_dir}')
 
@@ -271,13 +275,118 @@ def main(nwb_path, probe_idx, results_dir=RESULTS_DIR):
             )
 
 
+def recompute_current_session(dandiset, asset_path, results_dir, probes=None, n_shuffle=1000):
+    """Full five-repeat Siegle Gabors for the current NWB, one file per probe.
+
+    Delay and duration are the same grid as ``main``. Each (x, y, orientation)
+    is required to have five presentations; the block is not split in half.
+    Files land in ``results/gabors/ephys/<session>/`` and replace the copies
+    whose unit ids came from the older NWB. Those older files are moved to
+    ``legacy_misaligned_units/`` so the reduction does not mix the two id lists.
+    """
+    from compute_rf_siegle_gabors_split_trials import compute_half, open_stream, _text
+    import rf_siegle_ophys as siegle
+
+    delays = (0.0, 0.025, 0.5, 0.1)
+    durations = (0.1, 0.2, 0.3)
+    stream, session_name = open_stream(None, dandiset, asset_path)
+    session_dir = Path(results_dir) / session_name
+    session_dir.mkdir(parents=True, exist_ok=True)
+    legacy = session_dir / "legacy_misaligned_units"
+    legacy.mkdir(exist_ok=True)
+    for path in session_dir.glob("*.h5"):
+        if "__trial_" in path.name:
+            continue
+        destination = legacy / path.name
+        if not destination.exists():
+            path.replace(destination)
+            print(f"moved aside {path.name}")
+
+    with stream:
+        units = stream.units_df(include_spikes=True)
+        df_rf = stream.gabor_rf_df()
+    units = units.copy()
+    units["probe"] = units["probe"].map(_text)
+    units["unit_name"] = units["unit_name"].map(_text)
+    available = list(pd.unique(units["probe"]))
+    selected = available if not probes else list(probes)
+    missing = [name for name in selected if name not in available]
+    if missing:
+        raise ValueError(f"Probes {missing} not in {available}")
+
+    counts = df_rf.groupby(["X", "Y", "Orientation"], observed=True).size()
+    print(
+        f"{len(df_rf)} presentations, repeats per cell {int(counts.min())}–{int(counts.max())} "
+        f"({(counts == 5).sum()} cells with 5, {(counts < 5).sum()} short)"
+    )
+    if int(counts.max()) != 5 or int(counts.min()) < 1:
+        raise RuntimeError(
+            "The full RF block is not a five-repeat grid: "
+            f"{int(counts.min())}–{int(counts.max())} presentations per cell"
+        )
+    if int(counts.min()) < 5:
+        print("Short cells keep their presented trials. Missing trials are left out, not filled with zeros.")
+    x_pos, y_pos, orientations = siegle.rf_grid(df_rf)
+    print(f"grid {len(x_pos)} x {len(y_pos)}, orientations {len(orientations)}")
+
+    # VISp is on Probe C, so that probe is finished before the others.
+    ordered = [name for name in selected if name == "ProbeC"] + [name for name in selected if name != "ProbeC"]
+    for probe_name in ordered:
+        on_probe = units.loc[units["probe"] == probe_name].drop_duplicates("unit_name")
+        print(f"\n{probe_name}: {len(on_probe)} units, full block")
+        sweep = []
+        for delay in delays:
+            for duration in durations:
+                filename = (
+                    f"{session_name}__rf-spike-count__{probe_name}"
+                    f"__delay_{float(delay)}__duration_{float(duration)}.h5"
+                )
+                path = session_dir / filename
+                sweep.append(path)
+                attributes = {
+                    "session": session_name,
+                    "probe": probe_name,
+                    "n_presentations": int(len(df_rf)),
+                    "n_repeats": 5,
+                    "split": "full_block",
+                    "n_shuffle": int(n_shuffle),
+                    "date_computed": datetime.today().strftime("%Y-%m-%d"),
+                    "delay_s": float(delay),
+                    "duration_s": float(duration),
+                    "source_asset": asset_path,
+                }
+                print(f"\n{probe_name}  delay={float(delay)}s  duration={float(duration)}s")
+                compute_half(
+                    on_probe, df_rf, x_pos, y_pos, orientations,
+                    float(delay), float(duration), path, attributes, n_shuffle,
+                )
+        optimized = session_dir / f"{session_name}__rf-spike-count__{probe_name}__optimized.h5"
+        _optimize_probe_files(sweep, optimized)
+        print(f"optimized {probe_name} -> {optimized.name}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--probe-idx", type=int, required=True)
-    parser.add_argument("--nwb-path", required=True)
+    parser.add_argument("--probe-idx", type=int, default=None)
+    parser.add_argument("--nwb-path", default=None)
     parser.add_argument("--results-path", default=RESULTS_DIR)
-
+    parser.add_argument("--dandiset", default=None)
+    parser.add_argument("--asset-path", default=None)
+    parser.add_argument("--probe", action="append", default=None,
+                        help="Probe name to recompute from the current NWB. Repeat for several. Default: all probes.")
+    parser.add_argument("--n-shuffle", type=int, default=1000)
     args = parser.parse_args()
-    main(args.nwb_path, args.probe_idx, args.results_path)
+    if args.dandiset or args.asset_path:
+        if not args.dandiset or not args.asset_path:
+            parser.error("Recomputing from DANDI needs both --dandiset and --asset-path")
+        repo_results = Path(__file__).resolve().parents[2] / "results" / "gabors" / "ephys"
+        results = args.results_path if args.results_path != RESULTS_DIR else repo_results
+        recompute_current_session(
+            args.dandiset, args.asset_path, results, args.probe, args.n_shuffle,
+        )
+    else:
+        if args.nwb_path is None or args.probe_idx is None:
+            parser.error("Pass --nwb-path and --probe-idx, or --dandiset and --asset-path")
+        main(args.nwb_path, args.probe_idx, args.results_path)
 
 

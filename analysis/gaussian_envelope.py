@@ -107,22 +107,26 @@ class FitResult(dict):
 
 
 def fit_gaussian_envelope(z_map, x_pos, y_pos, min_r2=0.5, isotropic=False,
-                          sigma_bounds=None):
-    """Fit a Gaussian envelope to one signed z-score RF map.
+                          sigma_bounds=None, nonnegative=False):
+    """Fit a Gaussian envelope to one RF map.
 
     Parameters
     ----------
     z_map : (nx, ny) array
-        Signed z-scores, indexed `[x_i, y_i]` — the layout the Gabor-patch
-        files use, matching `x_positions` and `y_positions`.
+        Map indexed `[x_i, y_i]`, matching `x_positions` and `y_positions`.
+        Non-finite pixels are left out of the fit. A signed z-score map is
+        fit as-is, so an OFF peak is a negative amplitude. Pass
+        ``np.abs(z_map)`` with ``nonnegative=True`` to fit an envelope.
     x_pos, y_pos : 1D arrays
-        Patch centres in visual degrees.
+        Pixel centres in visual degrees.
     min_r2 : float
         Variance-explained floor below which the fit is not `usable`.
     isotropic : bool
         Fit the 4-parameter circular model instead of the elliptical one.
     sigma_bounds : (lo, hi) or None
         Defaults to half the grid step up to the full grid span.
+    nonnegative : bool
+        Keep the amplitude at or above zero. Used for an absolute-value map.
 
     Returns
     -------
@@ -138,10 +142,9 @@ def fit_gaussian_envelope(z_map, x_pos, y_pos, min_r2=0.5, isotropic=False,
     # 'ij' so that X[i, j] pairs with z[i, j] = z at (x_pos[i], y_pos[j]);
     # the default 'xy' indexing would silently transpose the map.
     X, Y = np.meshgrid(x_pos, y_pos, indexing='ij')
-    xy = (X.ravel(), Y.ravel())
-    zf = z.ravel()
-
-    step = float(np.median(np.diff(x_pos)))
+    finite = np.isfinite(z)
+    n_params = 5 if isotropic else 7
+    step = float(np.median(np.diff(np.sort(x_pos))))
     span = float(max(x_pos.max() - x_pos.min(), y_pos.max() - y_pos.min()))
     lo, hi = sigma_bounds if sigma_bounds is not None else (step / 2, span)
 
@@ -152,13 +155,19 @@ def fit_gaussian_envelope(z_map, x_pos, y_pos, min_r2=0.5, isotropic=False,
                     r2=np.nan, peak_z=np.nan, success=False, edge=False,
                     railed=False, sigma_resolution=step / 2, min_r2=min_r2)
 
-    if not np.isfinite(zf).all() or np.allclose(zf, zf[0]):
+    if int(finite.sum()) < n_params:
+        return out
+    xy = (X[finite], Y[finite])
+    zf = z[finite]
+    if np.allclose(zf, zf[0]):
         return out
 
     # Seed from the map itself: the extreme pixel relative to the background.
     offset0 = float(np.median(zf))
     k = int(np.argmax(np.abs(zf - offset0)))
     amp0 = float(zf[k] - offset0)
+    if nonnegative:
+        amp0 = abs(amp0)
     x00, y00 = float(xy[0][k]), float(xy[1][k])
     out['peak_z'] = float(zf[k])
 
@@ -167,16 +176,17 @@ def fit_gaussian_envelope(z_map, x_pos, y_pos, min_r2=0.5, isotropic=False,
     xlo, xhi = x_pos.min() - step, x_pos.max() + step
     ylo, yhi = y_pos.min() - step, y_pos.max() + step
     amp_lim = 10 * max(abs(amp0), 1e-6)
+    amp_lo = 0.0 if nonnegative else -amp_lim
 
     if isotropic:
         f = gaussian2d_iso
         p0 = [amp0, x00, y00, step, offset0]
-        bounds = ([-amp_lim, xlo, ylo, lo, zf.min() - 10],
+        bounds = ([amp_lo, xlo, ylo, lo, zf.min() - 10],
                   [amp_lim, xhi, yhi, hi, zf.max() + 10])
     else:
         f = gaussian2d
         p0 = [amp0, x00, y00, step, step, 0.0, offset0]
-        bounds = ([-amp_lim, xlo, ylo, lo, lo, -np.pi / 2, zf.min() - 10],
+        bounds = ([amp_lo, xlo, ylo, lo, lo, -np.pi / 2, zf.min() - 10],
                   [amp_lim, xhi, yhi, hi, hi, np.pi / 2, zf.max() + 10])
 
     try:
