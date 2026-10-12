@@ -84,3 +84,20 @@ python optimize_waven_parameters.py /results/waven/ProbeB/lib_<hash>/ \
 /lib_id        — (n_units,)  filter library hash string
 /source_file   — (n_units,)  path to the per-(delay, duration) source .h5
 ```
+
+### Analysis and plots for data release
+
+Example sessions: ecephys 830794, mesoscope 832700, SLAP2 829704. Results go under `results/`. Then:
+
+```bash
+cd code/scripts
+python plot_data_release_panels.py
+```
+
+Generating the plots requires the following steps:
+1. **Zebra maps.** `compute_waven_pipeline.py` (ephys spikes), `compute_waven_pipeline_mesoscope.py --signal events`, `compute_waven_pipeline_slap2.py --signal dff`. Each calls `waven_pipeline.full_pipeline`, then `optimize_waven_parameters.py`.
+2. **Zebra nulls.** `compute_null_distribution.py`, `compute_null_distribution_mesoscope.py`, and `compute_null_distribution_slap2.py` write `results/zebra/nullresults/`. The plotter fits a Gumbel to those surrogates and applies BH at q = 0.05. Those three scripts are not in this checkout.
+3. **Local Gabor maps.** `compute_rf_gabors_ephys.py` (self-contained). `compute_rf_gabors_mesoscope.py` and `compute_rf_gabors_slap2.py` (default `--signal events`) call `rf_siegle_ophys.py`, which is a library, not a script you run. All three write `*__optimized.h5`.
+4. **Gabor unit significance.** `compute_gabor_unit_significance.py` adds `p_value_gumbel` and `p_value_bh` to those files. Needed for the overlap, pie, and Gaussian-summary panels.
+5. **Ephys areas.** `export_ephys_unit_areas.py` writes `unit_areas.csv`, used to keep visual cortex layer 2/3.
+
