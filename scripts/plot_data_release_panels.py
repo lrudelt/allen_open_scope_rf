@@ -634,15 +634,20 @@ SUMMARY_SESSIONS = {
     "slap2": "sub-829704_ses-829704-2025-12-18-10-57-36_image+ophys",
 }
 
+# DMD1 is the apical plane and DMD2 the basal plane. The line break is the
+# tick label on the summary figures.
+DMD1_LABEL = "DMD1\n(apical)"
+DMD2_LABEL = "DMD2\n(basal)"
+
 GROUP_COLORS = {
     "VISp": "#2166ac",
     "VISl": "#b2182b",
     "V1": "#2166ac",
     "LM": "#b2182b",
-    "basal (DMD1)": "#2166ac",
-    "apical (DMD2)": "#b2182b",
-    "basal": "#2166ac",
-    "apical": "#b2182b",
+    DMD1_LABEL: "#2166ac",
+    DMD2_LABEL: "#b2182b",
+    "apical": "#2166ac",
+    "basal": "#b2182b",
     "DMD1": "#2166ac",
     "DMD2": "#b2182b",
 }
@@ -677,7 +682,7 @@ def load_zebra_summaries(session: str, signal: str | None = None) -> pd.DataFram
 
 
 def label_summary_groups(modality: str, df: pd.DataFrame) -> pd.DataFrame:
-    """VISp vs VISl, or SLAP2 basal (DMD1 green) vs apical (DMD2 green)."""
+    """VISp vs VISl, or SLAP2 apical (DMD1 green) vs basal (DMD2 green)."""
     if modality == "ecephys":
         anatomy = load_ephys_unit_areas()
         print(f"Unit areas from {UNIT_AREAS_CSV.name}")
@@ -719,7 +724,7 @@ def label_summary_groups(modality: str, df: pd.DataFrame) -> pd.DataFrame:
 
     out = df[df["group"].isin(["DMD1__green", "DMD2__green"])].copy()
     out["structure"] = np.where(
-        out["group"] == "DMD1__green", "basal (DMD1)", "apical (DMD2)"
+        out["group"] == "DMD1__green", DMD1_LABEL, DMD2_LABEL
     )
     return out
 
@@ -745,8 +750,6 @@ def prepare_gabor_peak_z() -> dict[str, pd.DataFrame]:
     rename = {
         "VISp": "V1",
         "VISl": "LM",
-        "basal (DMD1)": "DMD1",
-        "apical (DMD2)": "DMD2",
     }
     tables = {}
     for modality, session in SUMMARY_SESSIONS.items():
@@ -787,7 +790,7 @@ def prepare_gabor_peak_z() -> dict[str, pd.DataFrame]:
 
 STRUCTURE_ORDER = (
     "VISp", "VISl", "V1", "LM",
-    "basal", "apical", "basal (DMD1)", "apical (DMD2)", "DMD1", "DMD2",
+    DMD1_LABEL, DMD2_LABEL, "DMD1", "DMD2", "apical", "basal",
 )
 SUMMARY_FONT = 13
 # Summary-figure text is twice the original size. Tick labels are 1.5×.
@@ -955,8 +958,6 @@ def plot_grouped_values(
 _SUMMARY_RENAME = {
     "VISp": "V1",
     "VISl": "LM",
-    "basal (DMD1)": "basal",
-    "apical (DMD2)": "apical",
 }
 
 
@@ -1045,7 +1046,8 @@ def _scatter_legend_handles(df: pd.DataFrame):
         Line2D(
             [0], [0], linestyle="none", marker="o", markersize=16,
             markerfacecolor=GROUP_COLORS[structure], markeredgecolor="none",
-            label=f"{structure} (n={(df['structure'] == structure).sum()})",
+            # Compartment (apical/basal) stays on the box-plot ticks only.
+            label=f"{structure.split(chr(10), 1)[0]} (n={(df['structure'] == structure).sum()})",
         )
         for structure in structures
     ]
@@ -1222,7 +1224,7 @@ def plot_fit_summaries(tables: dict[str, dict]) -> None:
     zebra_w, zebra_h = zebra_span_x * inch, zebra_span_y * inch
     group_w, gap_row = 3.2, 1.65
     margin_l, margin_r = 1.7, 0.45
-    margin_b, margin_t = 1.15, 1.95
+    margin_b, margin_t = 1.55, 1.95
     # Draft gaps are wide enough that the labels can be measured without overlap.
     draft_gap = 2.3
     draft_w = margin_l + zebra_w + draft_gap + group_w + draft_gap + group_w + margin_r
@@ -1792,8 +1794,8 @@ _PIE_AREA = {
     "VISp": "V1",
     "VISl": "LM",
     "VISp_0": "V1",
-    "DMD1": "basal",
-    "DMD2": "apical",
+    "DMD1": DMD1_LABEL,
+    "DMD2": DMD2_LABEL,
 }
 
 
